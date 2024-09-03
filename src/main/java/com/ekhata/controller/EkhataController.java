@@ -16,6 +16,6 @@ public class EkhataController {
 
     @GetMapping(value = "compare/{deed_number}/{ec_number}")
     public String checkEcDetails(@PathVariable("deed_number") String deed_number, @PathVariable("ec_number") String ec_number) {
-        return ekhataService.doIt(deed_number, ec_number);
+        return ekhataService.processDeedData(deed_number, ec_number);
     }
 }

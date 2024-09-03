@@ -2,12 +2,9 @@ package com.ekhata.service;
 
 import com.ekhata.dao.DeedData;
 import com.ekhata.dao.EcDeedDetail;
-import com.ekhata.model.DeedResponse;
 import com.ekhata.model.EcResponse;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
-import reactor.core.publisher.Mono;
-import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Comparator;
 import java.util.List;
@@ -41,7 +38,7 @@ public class EkhataService {
     }
 
     public boolean callApiToCheckDeedArticle(String stamparticle) {
-        return true;
+        return false;
         //call deedNUmberAPI to get EC details
 //        String deedReqBody = "{\"finalRegNumber\": \"" + stamparticle  + "\"}";
 //        DeedData deedResponse = externalApiService.makeDeedRequest(deedUrl, deedReqBody);
@@ -63,7 +60,7 @@ public class EkhataService {
         return ecResponse.getDeedDetails();
 
     }
-    public String doIt(String deed_number, String ec_number) {
+    public String processDeedData(String deed_number, String ec_number) {
         DeedData deedData = callDeedApi(deed_number);
         List<EcDeedDetail> ecDeedDetails = callEcDocApi(ec_number);
         return continueProcess(ecDeedDetails, null, deedData);
@@ -73,65 +70,67 @@ public class EkhataService {
         if(ecDeedDetail != null) {
             ecDetails.remove(ecDeedDetail);
         }
-        Optional<EcDeedDetail> max = ecDetails.stream()
-                .max(Comparator.comparing(deed -> parseDate(deed.getExecutionDate())));
+        Optional<EcDeedDetail> latestEcDeedDetailOptional = findLatestEcDeedDetail(ecDetails);
 
-        if(max.isPresent()) {
-            EcDeedDetail maxExeDate = max.get();
+        if(latestEcDeedDetailOptional.isPresent()) {
+            EcDeedDetail latestEcDeedDetail = latestEcDeedDetailOptional.get();
             //call deed API to fetch EcDetails for maxExeDate.getDocSummary()
-            DeedData newDeedData = callDeedApi(maxExeDate.getDocSummary());
+            DeedData newDeedData = callDeedApi(latestEcDeedDetail.getDocSummary());
 
-            if(isEcDateIsAfterDeedDate(maxExeDate.getExecutionDate(), deedResponse.getExecutedate())) {
-                continueProcessFurther(newDeedData, ecDetails, maxExeDate, deedResponse);
+            if(isEcDateIsAfterDeedDate(latestEcDeedDetail.getExecutionDate(), deedResponse.getExecutedate())) {
+                return continueProcessFurther(newDeedData, ecDetails, latestEcDeedDetail, deedResponse);
             }
             //check if both dates are equal
-            else if(isEcDaterDeedDateEqual(maxExeDate.getExecutionDate(), deedResponse.getExecutedate())) {
+            else if(isEcDaterDeedDateEqual(latestEcDeedDetail.getExecutionDate(), deedResponse.getExecutedate())) {
                 //check if document number is same in both doc
-                if(newDeedData.getFinalregistrationnumber().equalsIgnoreCase(deedResponse.getFinalregistrationnumber())) {
-                    return "No Further Transaction as per EC given by citizen";
-                } else {
-                    continueProcessFurther(newDeedData, ecDetails, maxExeDate, deedResponse);
-                }
-
+                return compareDeedData(newDeedData, deedResponse, ecDetails, latestEcDeedDetail);
             } else {
                 return "No Further Transaction as per EC given by citizen";
             }
-
         } else {
             throw new RuntimeException("No Data Matched");
         }
-        return "No Data Matched";
     }
 
-    private String continueProcessFurther(DeedData newDeedData, List<EcDeedDetail> ecDetails, EcDeedDetail maxExeDate, DeedData deedResponse) {
+    private String compareDeedData(DeedData newDeedData, DeedData deedResponse, List<EcDeedDetail> ecDetails, EcDeedDetail maxEcDeedDetail) {
+        if (newDeedData.getFinalregistrationnumber().equalsIgnoreCase(deedResponse.getFinalregistrationnumber())) {
+            return "No Further Transaction as per EC given by citizen";
+        } else {
+            return continueProcessFurther(newDeedData, ecDetails, maxEcDeedDetail, deedResponse);
+        }
+    }
+
+    private Optional<EcDeedDetail> findLatestEcDeedDetail(List<EcDeedDetail> ecDetails) {
+        return ecDetails.stream()
+                .max(Comparator.comparing(deed -> parseDate(deed.getExecutionDate())));
+    }
+
+    private String continueProcessFurther(DeedData newDeedData, List<EcDeedDetail> ecDetails, EcDeedDetail latestEcDeedDetail, DeedData deedResponse) {
         //check the type of deed article
         String article = newDeedData.getPropertyinfo().get(0).getStamparticle();
         //call API to check deed article - Is it of type "USe" or "Not Use"
         boolean articleInUse = callApiToCheckDeedArticle(article);
         //if type is "use"
         //compare deeddata woth newDeedData
-        if(articleInUse) {
-            if(compareFirstLevelOfData(deedResponse, newDeedData)) {
-                //property/door/siteno
-                //village/ward
-                //registration distict
-                //if all compare success
-                //compare more fields
-                //purchaser/receiver name
-                if(compareSecondLevelOfData(deedResponse, newDeedData)) {
-                    //if matches
-                    return "ec success";
-                } else {
-                    //else
-                    return "ec shows property further transacted , so cannot process ur application. u can meet jurisdictional ARO";
-                }
-            } else {
-                return "enter proper ec as property in ec doesnt match property in registered deed";
-            }
+        if (articleInUse) {
+            return evaluateDeedData(newDeedData, deedResponse, ecDetails, latestEcDeedDetail);
+        } else {
+            //if type is "not use"
+            //continue to next latest date of List<ecdeeddata>
+            return continueProcess(ecDetails, latestEcDeedDetail, deedResponse);
         }
-        //if type is "not use"
-        //continue to next latest date of List<ecdeeddata>
-        return continueProcess(ecDetails, maxExeDate, deedResponse);
+    }
+
+    private String evaluateDeedData(DeedData newDeedData, DeedData deedResponse, List<EcDeedDetail> ecDetails, EcDeedDetail maxEcDeedDetail) {
+        if (compareFirstLevelOfData(deedResponse, newDeedData)) {
+            if (compareSecondLevelOfData(deedResponse, newDeedData)) {
+                return "EC Success";
+            } else {
+                return "EC shows property further transacted, cannot process your application. Meet jurisdictional ARO.";
+            }
+        } else {
+            return "Enter proper EC as property in EC doesn't match property in registered deed.";
+        }
     }
 
     private static LocalDate parseDate(String dateString) {
